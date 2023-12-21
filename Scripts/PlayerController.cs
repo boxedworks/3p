@@ -7,15 +7,18 @@ using UnityEngine.InputSystem;
 public class PlayerController : GameEntity
 {
 
-  Vector3 _aimDir;
+  Vector3 _aimPos, _aimDir;
 
   // Start is called before the first frame update
   void Start()
   {
+    s_Players.Add(this);
+    s_PlayersMapped.Add(transform.GetChild(1).gameObject.GetInstanceID(), this);
+
     _physicsData = new();
     _cameraData = new();
 
-    _healthData = new(GameObject.Find("PlayerHealth").GetComponent<UnityEngine.UI.Slider>(), 100)
+    _healthData = new(GameObject.Find("PlayerHealth").GetComponent<UnityEngine.UI.Slider>(), 100f)
     {
       _Text = GameObject.Find("PlayerHealthText").GetComponent<TMPro.TextMeshProUGUI>()
     };
@@ -154,13 +157,12 @@ public class PlayerController : GameEntity
           Source = _player,
           ProjectileType = ProjectileScript.ProjectileType.FIREBALL,
 
-          SpawnPosition =
-            _player.transform.position +
-            _player.transform.forward * 0.5f +
-            new Vector3(0f, 0.4f, 0f),
+          SpawnPosition = _player._aimPos,
           Direction = _player._aimDir,
           Speed = 4000f,
-          Size = 0.5f,
+          Size = 0.7f,
+
+          Damage = 50f,
         });
       }
     }
@@ -183,12 +185,12 @@ public class PlayerController : GameEntity
   HealthData _healthData;
   class HealthData
   {
-    public int _Health, _HealthMax;
+    public float _Health, _HealthMax;
 
     public UnityEngine.UI.Slider _Slider;
     public TMPro.TextMeshProUGUI _Text;
 
-    public HealthData(UnityEngine.UI.Slider slider, int healthMax)
+    public HealthData(UnityEngine.UI.Slider slider, float healthMax)
     {
       _HealthMax = _Health = healthMax;
       _Slider = slider;
@@ -196,7 +198,7 @@ public class PlayerController : GameEntity
 
     public void UpdateUI()
     {
-      _Slider.value = (float)_Health / _HealthMax;
+      _Slider.value = _Health / _HealthMax;
       if (_Text != null)
         _Text.text = $"{_Health}/{_HealthMax}";
     }
@@ -206,7 +208,7 @@ public class PlayerController : GameEntity
   PhysicsData _physicsData;
   class PhysicsData
   {
-    public Vector3 Velocity;
+    public Vector3 Velocity, ExternalForce;
 
     public bool isAirborn = true;
     public float AirbornTime;
@@ -286,7 +288,7 @@ public class PlayerController : GameEntity
     if (input0.magnitude > 0.4f)
     {
       _physicsData.Velocity += (camera.transform.right * input0.x + cameraForward * input0.y) * dt * 5f;
-      var maxV = 2f;
+      var maxV = 1.2f;
       if (_physicsData.Velocity.x > maxV)
         _physicsData.Velocity.x = maxV;
       else if (_physicsData.Velocity.x < -maxV)
@@ -301,7 +303,7 @@ public class PlayerController : GameEntity
     else if (!_physicsData.isAirborn)
       _physicsData.Velocity += (Vector3.zero - _physicsData.Velocity) * dt * 5f;
 
-    var moveDir = _physicsData.Velocity * dt * 5f;
+    var moveDir = (_physicsData.Velocity + _physicsData.ExternalForce) * dt * 5f;
     var moveDirx = new Vector3(moveDir.x, 0f, 0f);
     var moveDirz = new Vector3(0f, 0f, moveDir.z);
     var playerWidth = 0.5f;
@@ -324,6 +326,8 @@ public class PlayerController : GameEntity
     transform.position += new Vector3(moveDirx.x, 0f, moveDirz.z);
     transform.Rotate(new Vector3(0f, input1.x * 0.9f, 0f));
 
+    _physicsData.ExternalForce += (Vector3.zero - _physicsData.ExternalForce) * Time.deltaTime * 5f;
+
     // Camera
     _cameraData.CameraHeight = Mathf.Clamp(_cameraData.CameraHeight + -input1.y * dt * 100f, -85f, 85f);
 
@@ -343,15 +347,59 @@ public class PlayerController : GameEntity
 
     // Aim
     var aimDistance = 35f;
-    if (Physics.SphereCast(new Ray(camera.transform.position, camera.transform.forward), 0.05f, out raycasthit, 100f, LayerMask.GetMask("Default")))
+    if (Physics.SphereCast(new Ray(camera.transform.position, camera.transform.forward), 0.05f, out raycasthit, 100f, LayerMask.GetMask("Default", "Enemy")))
       aimDistance = raycasthit.distance;
-    _aimDir = ((camera.transform.position + camera.transform.forward * aimDistance) - (transform.position + new Vector3(0f, -0.5f, 0f))).normalized;
+    //Debug.Log(aimDistance);
+
+    _aimPos =
+      transform.position +
+      transform.forward * 0.5f +
+      new Vector3(0f, 0.4f, 0f);
+    _aimDir = ((camera.transform.position + camera.transform.forward * aimDistance) - _aimPos).normalized;
+
+    //Debug.DrawRay(_aimPos, _aimDir * 15f);
   }
 
+  // Take damage
+  public override void TakeDamage(DamageData damageData)
+  {
+    _healthData._Health = Mathf.Clamp(_healthData._Health - damageData.Damage, 0, _healthData._HealthMax);
+    _healthData.UpdateUI();
+    if (_healthData._Health <= 0f)
+    {
+      //return;
+    }
+
+    // Recoil
+    _physicsData.ExternalForce += (transform.position - damageData.DamageSource.transform.position).normalized * 3f;
+  }
+
+  //
   CameraData _cameraData;
   class CameraData
   {
     public float CameraHeight = 5f;
     public int CameraRotation;
+  }
+
+  //
+  public static List<PlayerController> s_Players;
+  public static Dictionary<int, PlayerController> s_PlayersMapped;
+  public static void Init()
+  {
+    s_Players = new();
+    s_PlayersMapped = new();
+  }
+  public static void UpdateIncr()
+  {
+
+  }
+
+  //
+  public static PlayerController GetPlayer(Collider c)
+  {
+    var instanceId = c.gameObject.GetInstanceID();
+    if (!s_PlayersMapped.ContainsKey(instanceId)) return null;
+    return s_PlayersMapped[instanceId];
   }
 }

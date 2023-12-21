@@ -11,10 +11,12 @@ public class ProjectileScript : MonoBehaviour
   UnityEngine.VFX.VisualEffect _vfx;
 
   float _spawnTime;
+  ProjectileSpawnData _projectileSpawnData;
 
   // Start is called before the first frame update
   public void Init(ProjectileSpawnData projectileSpawnData)
   {
+    _projectileSpawnData = projectileSpawnData;
 
     _spawnTime = Time.time;
     gameObject.layer = 8;
@@ -26,9 +28,11 @@ public class ProjectileScript : MonoBehaviour
 
     _rigidBody = gameObject.AddComponent<Rigidbody>();
     _rigidBody.interpolation = RigidbodyInterpolation.Interpolate;
+    _rigidBody.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
 
     _rigidBody.position = projectileSpawnData.SpawnPosition;
     _rigidBody.AddForce(projectileSpawnData.Direction * projectileSpawnData.Speed);
+
 
     // FX
     GameObject.Destroy(GetComponent<Renderer>());
@@ -57,8 +61,6 @@ public class ProjectileScript : MonoBehaviour
   void OnTriggerEnter(Collider c)
   {
     if (_triggered) return;
-    _triggered = true;
-
     Debug.Log(c.name);
 
     switch (c.gameObject.layer)
@@ -67,11 +69,42 @@ public class ProjectileScript : MonoBehaviour
       // Map
       case 0:
       default:
+        break;
 
-        OnDestroy();
+      // Projectile
+      case 8:
+        return;
+
+      // Player
+      case 6:
+
+        var player = PlayerController.GetPlayer(c);
+        if (player == null) break;
+        player.TakeDamage(new GameEntity.DamageData()
+        {
+          Damage = _projectileSpawnData.Damage,
+          DamageSource = _projectileSpawnData.Source
+        });
+
+        break;
+
+      // Enemy
+      case 7:
+
+        var enemy = EnemyScript.GetEnemy(c);
+        if (enemy == null) break;
+        enemy.TakeDamage(new GameEntity.DamageData()
+        {
+          Damage = _projectileSpawnData.Damage,
+          DamageSource = _projectileSpawnData.Source
+        });
+
         break;
 
     }
+
+    _triggered = true;
+    OnDestroy();
   }
 
   //
@@ -93,8 +126,11 @@ public class ProjectileScript : MonoBehaviour
     public float Size, Speed;
     public GameEntity Source;
     public ProjectileType ProjectileType;
+
+    public float Damage;
   }
-  public enum ProjectileType{
+  public enum ProjectileType
+  {
     NONE,
 
     FIREBALL,
