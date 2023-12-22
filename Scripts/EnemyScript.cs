@@ -3,10 +3,13 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.AI;
 
+using Mirror;
+
 public class EnemyScript : GameEntity
 {
 
   //
+  public EnemyType _EnemyType { get { return _enemyType; } }
   EnemyType _enemyType;
   public enum EnemyType
   {
@@ -29,19 +32,51 @@ public class EnemyScript : GameEntity
   float _movementSpeed;
   float _directionSwitch;
 
+  // Client init
+  bool _initted;
+  public override void OnStartClient()
+  {
+    Debug.Log($"startclient {_initted}");
+    if (!_initted)
+    {
+      CmdSyncEnemyData(connectionToClient);
+    }
+  }
+  [Command(requiresAuthority = false)]
+  void CmdSyncEnemyData(NetworkConnectionToClient connectionToClient)
+  {
+    TargetSyncEnemyData(connectionToClient, _enemyType);
+  }
+  [TargetRpc]
+  void TargetSyncEnemyData(NetworkConnectionToClient target, EnemyType enemyType)
+  {
+    Init(new EnemySpawnData()
+    {
+      EnemyType = enemyType
+    });
+  }
+
   // Start is called before the first frame update
   public void Init(EnemySpawnData enemySpawnData)
   {
-    s_Enemies.Add(this);
-    s_EnemiesMapped.Add(transform.GetChild(1).gameObject.GetInstanceID(), this);
+    _initted = true;
 
     _enemyType = enemySpawnData.EnemyType;
-    _collider = transform.GetChild(1).GetComponent<Collider>();
+
+    var enemyModel = GameObject.Instantiate(GameObject.Find($"Enemy{((int)_enemyType) - 1}"));
+    enemyModel.transform.parent = transform;
+    enemyModel.transform.localPosition = Vector3.zero;
+    enemyModel.transform.localRotation = Quaternion.identity;
+
+    _collider = transform.GetChild(0).GetChild(1).GetComponent<Collider>();
     transform.position = enemySpawnData.Position;
+    Debug.Log($"{netId} .. initting ... {_collider.gameObject.GetInstanceID()}");
+
+    s_Enemies.Add(this);
+    s_EnemiesMapped.Add(_collider.gameObject.GetInstanceID(), this);
 
     _physicsData = new();
     _directionSwitch = Random.Range(1f, 2f) * (Random.Range(0, 2) == 0 ? -1f : 1f);
-    Debug.Log(_directionSwitch);
 
     var health = 100f;
     switch (_enemyType)
@@ -54,7 +89,7 @@ public class EnemyScript : GameEntity
 
         // Gather laser
         _gameObjects = new GameObject[]{
-          transform.GetChild(2).gameObject
+          transform.GetChild(0).GetChild(2).gameObject
         };
 
         break;
@@ -66,7 +101,7 @@ public class EnemyScript : GameEntity
         _attackTimeNext = Time.time + Random.Range(2f, 4f);
 
         // Gather materials
-        var renderer = transform.GetChild(2).GetComponent<MeshRenderer>();
+        var renderer = transform.GetChild(0).GetChild(2).GetComponent<MeshRenderer>();
         _materials = new Material[]{
           new Material(renderer.sharedMaterials[0])
         };
@@ -83,7 +118,7 @@ public class EnemyScript : GameEntity
         _attackTimeNext = Time.time + Random.Range(2f, 4f);
 
         // Gather materials
-        renderer = transform.GetChild(2).GetComponent<MeshRenderer>();
+        renderer = transform.GetChild(0).GetChild(2).GetComponent<MeshRenderer>();
         _materials = new Material[]{
           new Material(renderer.sharedMaterials[0])
         };
@@ -119,6 +154,11 @@ public class EnemyScript : GameEntity
   //
   void OnDestroy()
   {
+    //
+    s_Enemies.Remove(this);
+    s_EnemiesMapped.Remove(_collider.gameObject.GetInstanceID());
+
+    //
     if (_healthData._Slider != null)
       GameObject.Destroy(_healthData._Slider.gameObject);
     if (_materials != null)
@@ -176,6 +216,9 @@ public class EnemyScript : GameEntity
   void Update()
   {
 
+    CheckAttack();
+    if (!isOwned) return;
+
     switch (_enemyType)
     {
 
@@ -191,68 +234,6 @@ public class EnemyScript : GameEntity
 
         transform.LookAt(_targetClosest.transform.position);
 
-        // Attack
-        var dirToPlayer = (_targetClosest.transform.position - transform.position).normalized;
-        if (Time.time - _attackTimeNext > 0f)
-        {
-          _attackTime = Time.time;
-          _attackTimeNext = Time.time + Random.Range(5f, 9f);
-          _targetPosition = new Vector3(Random.Range(-15f, 15f), Random.Range(5f, 9f), Random.Range(-15f, 15f));
-
-          var raycasthit = new RaycastHit();
-          if (Physics.SphereCast(new Ray(transform.position, dirToPlayer), 0.1f, out raycasthit, 100f, LayerMask.GetMask("Default")))
-          {
-            _attackPosition = raycasthit.point;
-          }
-          else
-          {
-            _attackPosition = transform.position + dirToPlayer * 100f;
-          }
-        }
-
-        var laser = _gameObjects[0];
-        var attackSpeed = 0.5f;
-        dirToTarget = _attackPosition - transform.position;
-        if (Time.time - _attackTime < attackSpeed)
-        {
-          var attackNormalized = (Time.time - _attackTime) / attackSpeed;
-
-          var distanceToTarget = dirToTarget.magnitude;
-          var laserWidth = 0.07f;
-          laser.transform.localScale = new Vector3(laserWidth * attackNormalized, distanceToTarget * 0.5f, laserWidth * attackNormalized);
-          laser.transform.position = transform.position + dirToTarget.normalized * distanceToTarget * 0.5f;
-          laser.transform.LookAt(_attackPosition);
-          laser.transform.Rotate(new Vector3(90f, 0f, 0f));
-
-          if (!laser.activeSelf)
-            laser.SetActive(true);
-        }
-
-        // Shoot
-        else
-        {
-          if (laser.activeSelf)
-          {
-            laser.SetActive(false);
-
-            //
-            var raycasthit = new RaycastHit();
-            if (Physics.SphereCast(new Ray(transform.position, dirToTarget), 0.1f, out raycasthit, 100f, LayerMask.GetMask("Default", "Player")))
-            {
-              var playerGot = PlayerController.GetPlayer(raycasthit.collider);
-              if (playerGot != null)
-              {
-                playerGot.TakeDamage(new DamageData()
-                {
-                  Damage = 25f,
-
-                  DamageSource = this
-                });
-              }
-            }
-          }
-        }
-
         break;
 
       case EnemyType.CHASE_SIMPLE:
@@ -260,7 +241,7 @@ public class EnemyScript : GameEntity
         if (_targetClosest == null) return;
 
         // Movement
-        dirToPlayer = (_targetClosest.transform.position - transform.position).normalized;
+        var dirToPlayer = (_targetClosest.transform.position - transform.position).normalized;
         desiredPosition = _targetClosest.transform.position + -dirToPlayer * 1.5f + _targetPosition;
         dirToTarget = ((desiredPosition - transform.position).normalized + (_lastDistanceToTarget > 4f ? _directionSwitch * transform.right : Vector3.zero)).normalized;
         _physicsData.Velocity += (dirToTarget - _physicsData.Velocity) * Time.deltaTime * 3f;
@@ -276,16 +257,15 @@ public class EnemyScript : GameEntity
           {
             if (distanceToPlayer < 6f)
             {
-              _attackTime = Time.time;
-              _attackTimeNext = Time.time + Random.Range(5f, 9f);
+              CmdAttack();
             }
 
           }
         }
 
         // Attack
-        var aoe = transform.GetChild(2).gameObject;
-        attackSpeed = 0.5f;
+        var aoe = transform.GetChild(0).GetChild(2).gameObject;
+        var attackSpeed = 0.5f;
         if (Time.time - _attackTime < attackSpeed)
         {
 
@@ -367,7 +347,7 @@ public class EnemyScript : GameEntity
         }
 
         // Attack
-        aoe = transform.GetChild(2).gameObject;
+        aoe = transform.GetChild(0).GetChild(2).gameObject;
         attackSpeed = 1f;
         if (Time.time - _attackTime < attackSpeed)
         {
@@ -435,6 +415,102 @@ public class EnemyScript : GameEntity
   }
 
   //
+  void CheckAttack()
+  {
+    switch (_EnemyType)
+    {
+      case EnemyType.FLY_SIMPLE:
+
+        // Attack
+        var dirToPlayer = (_targetClosest.transform.position - transform.position).normalized;
+        if (Time.time - _attackTimeNext > 0f)
+        {
+          _attackTime = Time.time;
+          _attackTimeNext = Time.time + Random.Range(5f, 9f);
+          _targetPosition = new Vector3(Random.Range(-15f, 15f), Random.Range(5f, 9f), Random.Range(-15f, 15f));
+
+          var raycasthit = new RaycastHit();
+          if (Physics.SphereCast(new Ray(transform.position, dirToPlayer), 0.1f, out raycasthit, 100f, LayerMask.GetMask("Default")))
+          {
+            _attackPosition = raycasthit.point;
+          }
+          else
+          {
+            _attackPosition = transform.position + dirToPlayer * 100f;
+          }
+        }
+
+        var laser = _gameObjects[0];
+        var attackSpeed = 0.5f;
+        var dirToTarget = _attackPosition - transform.position;
+        if (Time.time - _attackTime < attackSpeed)
+        {
+          var attackNormalized = (Time.time - _attackTime) / attackSpeed;
+
+          var distanceToTarget = dirToTarget.magnitude;
+          var laserWidth = 0.07f;
+          laser.transform.localScale = new Vector3(laserWidth * attackNormalized, distanceToTarget * 0.5f, laserWidth * attackNormalized);
+          laser.transform.position = transform.position + dirToTarget.normalized * distanceToTarget * 0.5f;
+          laser.transform.LookAt(_attackPosition);
+          laser.transform.Rotate(new Vector3(90f, 0f, 0f));
+
+          if (!laser.activeSelf)
+            laser.SetActive(true);
+        }
+
+        // Shoot
+        else
+        {
+          if (laser.activeSelf)
+          {
+            laser.SetActive(false);
+
+            //
+            if (isOwned)
+            {
+              var raycasthit = new RaycastHit();
+              if (Physics.SphereCast(new Ray(transform.position, dirToTarget), 0.1f, out raycasthit, 100f, LayerMask.GetMask("Default", "Player")))
+              {
+                var playerGot = PlayerController.GetPlayer(raycasthit.collider);
+                if (playerGot != null)
+                {
+                  playerGot.TakeDamage(new DamageData()
+                  {
+                    Damage = 25f,
+
+                    DamageSource = this
+                  });
+                }
+              }
+            }
+          }
+        }
+
+        break;
+    }
+  }
+
+  //
+  [ClientRpc]
+  void RpcSetTarget(uint playerNetId)
+  {
+    _targetClosest = PlayerController.GetPlayer(playerNetId);
+  }
+
+  //
+  [Command(requiresAuthority = false)]
+  void CmdAttack()
+  {
+    RpcAttack();
+  }
+  [ClientRpc]
+  void RpcAttack()
+  {
+    _attackTime = Time.time;
+    _attackTimeNext = Time.time + Random.Range(5f, 9f);
+  }
+
+  //
   public static List<EnemyScript> s_Enemies;
   public static Dictionary<int, EnemyScript> s_EnemiesMapped;
 
@@ -446,6 +522,7 @@ public class EnemyScript : GameEntity
 
   // Update enemies incrementally for systems
   static int s_enemyIndex;
+  [Server]
   public static void UpdateIncr()
   {
 
@@ -479,7 +556,17 @@ public class EnemyScript : GameEntity
       }
 
       if (closestPlayerIndex > -1)
-        enemy._targetClosest = players[closestPlayerIndex];
+      {
+        var playerClosest = players[closestPlayerIndex];
+        if ((enemy._targetClosest?.netId ?? 0) != playerClosest.netId)
+        {
+          enemy.RpcSetTarget(playerClosest.netId);
+
+          var netid = enemy.GetComponent<NetworkIdentity>();
+          netid.RemoveClientAuthority();
+          netid.AssignClientAuthority(playerClosest.connectionToClient);
+        }
+      }
     }
 
   }
@@ -498,13 +585,16 @@ public class EnemyScript : GameEntity
     public EnemyType EnemyType;
     public Vector3 Position;
   }
+
+  [Server]
   public static EnemyScript SpawnEnemy(EnemySpawnData enemySpawnData)
   {
-    var enemyModel = GameObject.Instantiate(GameObject.Find($"Enemy{((int)enemySpawnData.EnemyType) - 1}"));
-
-    var enemyScript = enemyModel.AddComponent<EnemyScript>();
+    var enemyScript = GameObject.Instantiate(NetworkManager.singleton.spawnPrefabs[0]).GetComponent<EnemyScript>();
     enemyScript.Init(enemySpawnData);
+    NetworkServer.Spawn(enemyScript.gameObject);
 
     return enemyScript;
   }
+
+  //
 }

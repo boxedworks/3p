@@ -4,6 +4,8 @@ using UnityEngine;
 
 using UnityEngine.InputSystem;
 
+using Mirror;
+
 public class PlayerController : GameEntity
 {
 
@@ -14,17 +16,26 @@ public class PlayerController : GameEntity
   {
     s_Players.Add(this);
     s_PlayersMapped.Add(transform.GetChild(1).gameObject.GetInstanceID(), this);
+    s_PlayersNetMapped.Add(netId, this);
 
-    _physicsData = new();
-    _cameraData = new();
-
-    _healthData = new(GameObject.Find("PlayerHealth").GetComponent<UnityEngine.UI.Slider>(), 100f)
+    //
+    if (isLocalPlayer)
     {
-      _Text = GameObject.Find("PlayerHealthText").GetComponent<TMPro.TextMeshProUGUI>()
-    };
-    _healthData.UpdateUI();
+      _physicsData = new();
+      _cameraData = new();
 
-    _skillData = new(this);
+      _skillData = new(this);
+
+      _healthData = new(GameObject.Find("PlayerHealth").GetComponent<UnityEngine.UI.Slider>(), 100f)
+      {
+        _Text = GameObject.Find("PlayerHealthText").GetComponent<TMPro.TextMeshProUGUI>()
+      };
+      _healthData.UpdateUI();
+    }
+    else
+    {
+      _healthData = new(null, 100f);
+    }
   }
 
   //
@@ -198,7 +209,8 @@ public class PlayerController : GameEntity
 
     public void UpdateUI()
     {
-      _Slider.value = _Health / _HealthMax;
+      if (_Slider != null)
+        _Slider.value = _Health / _HealthMax;
       if (_Text != null)
         _Text.text = $"{_Health}/{_HealthMax}";
     }
@@ -218,6 +230,14 @@ public class PlayerController : GameEntity
   // Update is called once per frame
   void Update()
   {
+
+    if (!isLocalPlayer) return;
+
+    if (isServer)
+    {
+      PlayerController.UpdateIncr();
+      EnemyScript.UpdateIncr();
+    }
 
     // Gather controller input
     var gamepad = Gamepad.current;
@@ -370,8 +390,17 @@ public class PlayerController : GameEntity
       //return;
     }
 
+    if (!isLocalPlayer) return;
+
     // Recoil
     _physicsData.ExternalForce += (transform.position - damageData.DamageSource.transform.position).normalized * 3f;
+  }
+
+  void OnDestroy()
+  {
+    s_Players.Remove(this);
+    s_PlayersMapped.Remove(transform.GetChild(1).gameObject.GetInstanceID());
+    s_PlayersNetMapped.Remove(netId);
   }
 
   //
@@ -382,13 +411,46 @@ public class PlayerController : GameEntity
     public int CameraRotation;
   }
 
+  // On connect
+  [System.Serializable]
+  struct SessionData
+  {
+    public EnemyScript.EnemyType[] SpawnedEnemies;
+  }
+  [Command]
+  void CmdGetSyncSessionData()
+  {
+
+    var enemies = EnemyScript.s_Enemies;
+    var spawnedEnemies = new EnemyScript.EnemyType[enemies.Count];
+    for (var i = 0; i < enemies.Count; i++)
+      spawnedEnemies[i] = enemies[i]._EnemyType;
+
+    TargetSyncSessionData(new SessionData()
+    {
+      SpawnedEnemies = spawnedEnemies,
+    });
+  }
+  [TargetRpc]
+  void TargetSyncSessionData(SessionData gotData)
+  {
+
+    foreach (var enemyType in gotData.SpawnedEnemies)
+    {
+      Debug.Log(enemyType);
+    }
+
+  }
+
   //
   public static List<PlayerController> s_Players;
   public static Dictionary<int, PlayerController> s_PlayersMapped;
+  public static Dictionary<uint, PlayerController> s_PlayersNetMapped;
   public static void Init()
   {
     s_Players = new();
     s_PlayersMapped = new();
+    s_PlayersNetMapped = new();
   }
   public static void UpdateIncr()
   {
@@ -401,5 +463,10 @@ public class PlayerController : GameEntity
     var instanceId = c.gameObject.GetInstanceID();
     if (!s_PlayersMapped.ContainsKey(instanceId)) return null;
     return s_PlayersMapped[instanceId];
+  }
+  public static PlayerController GetPlayer(uint netId)
+  {
+    if (!s_PlayersNetMapped.ContainsKey(netId)) return null;
+    return s_PlayersNetMapped[netId];
   }
 }
