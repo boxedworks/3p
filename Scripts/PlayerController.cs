@@ -16,7 +16,6 @@ public class PlayerController : GameEntity
   {
     s_Players.Add(this);
     s_PlayersMapped.Add(transform.GetChild(1).gameObject.GetInstanceID(), this);
-    s_PlayersNetMapped.Add(netId, this);
 
     //
     if (isLocalPlayer)
@@ -163,9 +162,9 @@ public class PlayerController : GameEntity
         _count = Mathf.Clamp(_count - amount, 0, _countMax);
         UpdateCountText();
 
-        ProjectileScript.SpawnProjectile(new ProjectileScript.ProjectileSpawnData()
+        _player.SpawnProjectile(new ProjectileScript.ProjectileSpawnData()
         {
-          Source = _player,
+          SourceNetId = _player.netId,
           ProjectileType = ProjectileScript.ProjectileType.FIREBALL,
 
           SpawnPosition = _player._aimPos,
@@ -190,6 +189,25 @@ public class PlayerController : GameEntity
         _useRate = 0.25f;
       }
     }
+  }
+
+  //
+  void SpawnProjectile(ProjectileScript.ProjectileSpawnData projectileSpawnData)
+  {
+    ProjectileScript.SpawnProjectile(projectileSpawnData);
+    CmdSpawnProjectile(projectileSpawnData);
+  }
+  [Command]
+  void CmdSpawnProjectile(ProjectileScript.ProjectileSpawnData projectileSpawnData)
+  {
+    foreach (var player in s_Players)
+      if (projectileSpawnData.SourceNetId != player.netId)
+        TargetSpawnProjectile(player.connectionToClient, projectileSpawnData);
+  }
+  [TargetRpc]
+  void TargetSpawnProjectile(NetworkConnectionToClient target, ProjectileScript.ProjectileSpawnData projectileSpawnData)
+  {
+    ProjectileScript.SpawnProjectile(projectileSpawnData);
   }
 
   //
@@ -381,7 +399,7 @@ public class PlayerController : GameEntity
   }
 
   // Take damage
-  public override void TakeDamage(DamageData damageData)
+  public override void HandleDamage(DamageData damageData)
   {
     _healthData._Health = Mathf.Clamp(_healthData._Health - damageData.Damage, 0, _healthData._HealthMax);
     _healthData.UpdateUI();
@@ -400,7 +418,7 @@ public class PlayerController : GameEntity
   {
     s_Players.Remove(this);
     s_PlayersMapped.Remove(transform.GetChild(1).gameObject.GetInstanceID());
-    s_PlayersNetMapped.Remove(netId);
+    s_GameEntitiesMapped.Remove(netId);
   }
 
   //
@@ -445,12 +463,10 @@ public class PlayerController : GameEntity
   //
   public static List<PlayerController> s_Players;
   public static Dictionary<int, PlayerController> s_PlayersMapped;
-  public static Dictionary<uint, PlayerController> s_PlayersNetMapped;
-  public static void Init()
+  public static new void Init()
   {
     s_Players = new();
     s_PlayersMapped = new();
-    s_PlayersNetMapped = new();
   }
   public static void UpdateIncr()
   {
@@ -466,7 +482,7 @@ public class PlayerController : GameEntity
   }
   public static PlayerController GetPlayer(uint netId)
   {
-    if (!s_PlayersNetMapped.ContainsKey(netId)) return null;
-    return s_PlayersNetMapped[netId];
+    if (!s_GameEntitiesMapped.ContainsKey(netId)) return null;
+    return s_GameEntitiesMapped[netId] as PlayerController;
   }
 }

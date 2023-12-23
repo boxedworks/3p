@@ -79,10 +79,13 @@ public class ProjectileScript : MonoBehaviour
 
         var player = PlayerController.GetPlayer(c);
         if (player == null) break;
+
+        if (_projectileSpawnData.Source._IsPlayer) break;
+
         player.TakeDamage(new GameEntity.DamageData()
         {
           Damage = _projectileSpawnData.Damage,
-          DamageSource = _projectileSpawnData.Source
+          DamageSourceNetId = _projectileSpawnData.Source.netId
         });
 
         break;
@@ -92,10 +95,14 @@ public class ProjectileScript : MonoBehaviour
 
         var enemy = EnemyScript.GetEnemy(c);
         if (enemy == null) break;
+
+        if (_projectileSpawnData.Source._IsEnemy) break;
+        if (_projectileSpawnData.Source._IsPlayer && !_projectileSpawnData.Source.isLocalPlayer) break;
+
         enemy.TakeDamage(new GameEntity.DamageData()
         {
           Damage = _projectileSpawnData.Damage,
-          DamageSource = _projectileSpawnData.Source
+          DamageSourceNetId = _projectileSpawnData.Source.netId
         });
 
         break;
@@ -119,11 +126,13 @@ public class ProjectileScript : MonoBehaviour
   }
 
   //
+  [System.Serializable]
   public struct ProjectileSpawnData
   {
     public Vector3 SpawnPosition, Direction;
     public float Size, Speed;
-    public GameEntity Source;
+    public uint SourceNetId;
+    public GameEntity Source { get { return GameEntity.s_GameEntitiesMapped[SourceNetId]; } }
     public ProjectileType ProjectileType;
 
     public float Damage;

@@ -1,7 +1,6 @@
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
-using UnityEngine.AI;
 
 using Mirror;
 
@@ -32,15 +31,16 @@ public class EnemyScript : GameEntity
   float _movementSpeed;
   float _directionSwitch;
 
+  EnemyInfo _enemyInfo { get { return s_enemyInfos[_enemyType]; } }
+  bool _isAttacking { get { return Time.time - _attackTime < _enemyInfo.AttackSpeed; } }
+
   // Client init
   bool _initted;
   public override void OnStartClient()
   {
-    Debug.Log($"startclient {_initted}");
+    base.OnStartClient();
     if (!_initted)
-    {
       CmdSyncEnemyData(connectionToClient);
-    }
   }
   [Command(requiresAuthority = false)]
   void CmdSyncEnemyData(NetworkConnectionToClient connectionToClient)
@@ -70,7 +70,6 @@ public class EnemyScript : GameEntity
 
     _collider = transform.GetChild(0).GetChild(1).GetComponent<Collider>();
     transform.position = enemySpawnData.Position;
-    Debug.Log($"{netId} .. initting ... {_collider.gameObject.GetInstanceID()}");
 
     s_Enemies.Add(this);
     s_EnemiesMapped.Add(_collider.gameObject.GetInstanceID(), this);
@@ -131,7 +130,7 @@ public class EnemyScript : GameEntity
   }
 
   //
-  public override void TakeDamage(DamageData damageData)
+  public override void HandleDamage(DamageData damageData)
   {
     _healthData._Health = Mathf.Clamp(_healthData._Health - damageData.Damage, 0, _healthData._HealthMax);
     if (_healthData._Health <= 0f)
@@ -146,9 +145,13 @@ public class EnemyScript : GameEntity
       return;
     }
 
-    if (!_healthData._Slider.gameObject.activeSelf)
+    if (
+      damageData.DamageSource._IsPlayer && damageData.DamageSource.isLocalPlayer &&
+      !_healthData._Slider.gameObject.activeSelf
+    )
       _healthData.ToggleVisibility();
-    _healthData.UpdateUI();
+    if (_healthData._Slider.gameObject.activeSelf)
+      _healthData.UpdateUI();
   }
 
   //
@@ -157,6 +160,7 @@ public class EnemyScript : GameEntity
     //
     s_Enemies.Remove(this);
     s_EnemiesMapped.Remove(_collider.gameObject.GetInstanceID());
+    s_GameEntitiesMapped.Remove(netId);
 
     //
     if (_healthData._Slider != null)
@@ -216,9 +220,17 @@ public class EnemyScript : GameEntity
   void Update()
   {
 
+    // Update attack fx
     CheckAttack();
-    if (!isOwned) return;
 
+    // Health UI
+    if (_healthData != null)
+    {
+      _healthData._Slider.transform.position = Camera.main.WorldToScreenPoint(transform.position + Vector3.up * 1.2f);
+    }
+
+    // Owner update
+    if (!isOwned) return;
     switch (_enemyType)
     {
 
@@ -234,6 +246,28 @@ public class EnemyScript : GameEntity
 
         transform.LookAt(_targetClosest.transform.position);
 
+        // Attack
+        var dirToPlayer = (_targetClosest.transform.position - transform.position).normalized;
+        if (isOwned)
+        {
+          if (Time.time - _attackTimeNext > 0f)
+          {
+            _targetPosition = new Vector3(Random.Range(-15f, 15f), Random.Range(5f, 9f), Random.Range(-15f, 15f));
+
+            var raycasthit = new RaycastHit();
+            if (Physics.SphereCast(new Ray(transform.position, dirToPlayer), 0.1f, out raycasthit, 100f, LayerMask.GetMask("Default")))
+            {
+              _attackPosition = raycasthit.point;
+            }
+            else
+            {
+              _attackPosition = transform.position + dirToPlayer * 100f;
+            }
+
+            CmdAttack(_attackPosition);
+          }
+        }
+
         break;
 
       case EnemyType.CHASE_SIMPLE:
@@ -241,7 +275,7 @@ public class EnemyScript : GameEntity
         if (_targetClosest == null) return;
 
         // Movement
-        var dirToPlayer = (_targetClosest.transform.position - transform.position).normalized;
+        dirToPlayer = (_targetClosest.transform.position - transform.position).normalized;
         desiredPosition = _targetClosest.transform.position + -dirToPlayer * 1.5f + _targetPosition;
         dirToTarget = ((desiredPosition - transform.position).normalized + (_lastDistanceToTarget > 4f ? _directionSwitch * transform.right : Vector3.zero)).normalized;
         _physicsData.Velocity += (dirToTarget - _physicsData.Velocity) * Time.deltaTime * 3f;
@@ -257,62 +291,9 @@ public class EnemyScript : GameEntity
           {
             if (distanceToPlayer < 6f)
             {
-              CmdAttack();
+              CmdAttack(Vector3.zero);
             }
 
-          }
-        }
-
-        // Attack
-        var aoe = transform.GetChild(0).GetChild(2).gameObject;
-        var attackSpeed = 0.5f;
-        if (Time.time - _attackTime < attackSpeed)
-        {
-
-          if (!aoe.activeSelf)
-          {
-            _materials[0].SetFloat("_IntersectionDepth", 0.5f);
-            aoe.SetActive(true);
-          }
-          else
-            _materials[0].SetFloat("_IntersectionDepth", 0.5f + ((Time.time - _attackTime) / attackSpeed) * 1.2f);
-        }
-
-        // Damage
-        else
-        {
-          if (_attackTime != -1f)
-          {
-            _attackTime = -1f;
-            _attackFinishTime = Time.time;
-
-            var colliders = Physics.OverlapBox(aoe.transform.position, aoe.transform.localScale * 0.5f, Quaternion.identity, LayerMask.GetMask("Player"));
-            foreach (var collider in colliders)
-            {
-              var playerGot = PlayerController.GetPlayer(collider);
-              if (playerGot != null)
-              {
-                playerGot.TakeDamage(new DamageData()
-                {
-                  Damage = 25f,
-
-                  DamageSource = this
-                });
-              }
-            }
-          }
-
-          //
-          var interectionDepth = (1f - (Time.time - _attackFinishTime) / 0.13f) * 2f;
-          if (interectionDepth > 0f)
-          {
-            _materials[0].SetFloat("_IntersectionDepth", interectionDepth);
-          }
-          else
-          {
-            if (aoe.activeSelf)
-              aoe.SetActive(false);
-            transform.LookAt(transform.position + dirToPlayer);
           }
         }
 
@@ -339,79 +320,22 @@ public class EnemyScript : GameEntity
           {
             if (distanceToPlayer < 9f)
             {
-              _attackTime = Time.time;
-              _attackTimeNext = Time.time + Random.Range(5f, 9f);
+              CmdAttack(Vector3.zero);
             }
-
-          }
-        }
-
-        // Attack
-        aoe = transform.GetChild(0).GetChild(2).gameObject;
-        attackSpeed = 1f;
-        if (Time.time - _attackTime < attackSpeed)
-        {
-
-          if (!aoe.activeSelf)
-          {
-            _materials[0].SetFloat("_IntersectionDepth", 0.5f);
-            aoe.SetActive(true);
-          }
-          else
-            _materials[0].SetFloat("_IntersectionDepth", 0.5f + ((Time.time - _attackTime) / attackSpeed) * 1.2f);
-        }
-
-        // Damage
-        else
-        {
-          if (_attackTime != -1f)
-          {
-            _attackTime = -1f;
-            _attackFinishTime = Time.time;
-
-            var colliders = Physics.OverlapSphere(aoe.transform.position, aoe.transform.localScale.x * 0.5f, LayerMask.GetMask("Player"));
-            foreach (var collider in colliders)
-            {
-              var playerGot = PlayerController.GetPlayer(collider);
-              if (playerGot != null)
-              {
-                playerGot.TakeDamage(new DamageData()
-                {
-                  Damage = 25f,
-
-                  DamageSource = this
-                });
-              }
-            }
-          }
-
-          //
-          var interectionDepth = (1f - (Time.time - _attackFinishTime) / 0.13f) * 2f;
-          if (interectionDepth > 0f)
-          {
-            _materials[0].SetFloat("_IntersectionDepth", interectionDepth);
-          }
-          else
-          {
-            if (aoe.activeSelf)
-              aoe.SetActive(false);
-            transform.LookAt(transform.position + dirToPlayer);
           }
         }
 
         break;
 
     }
+  }
 
-    //
-    if (_healthData != null)
-    {
-
-
-      _healthData._Slider.transform.position = Camera.main.WorldToScreenPoint(transform.position + Vector3.up * 1.2f);
-
-    }
-
+  //
+  static Dictionary<EnemyType, EnemyInfo> s_enemyInfos;
+  struct EnemyInfo
+  {
+    public float AttackSpeed;
+    public float AttackNextMin, AttackNextMax;
   }
 
   //
@@ -421,27 +345,10 @@ public class EnemyScript : GameEntity
     {
       case EnemyType.FLY_SIMPLE:
 
-        // Attack
-        var dirToPlayer = (_targetClosest.transform.position - transform.position).normalized;
-        if (Time.time - _attackTimeNext > 0f)
-        {
-          _attackTime = Time.time;
-          _attackTimeNext = Time.time + Random.Range(5f, 9f);
-          _targetPosition = new Vector3(Random.Range(-15f, 15f), Random.Range(5f, 9f), Random.Range(-15f, 15f));
-
-          var raycasthit = new RaycastHit();
-          if (Physics.SphereCast(new Ray(transform.position, dirToPlayer), 0.1f, out raycasthit, 100f, LayerMask.GetMask("Default")))
-          {
-            _attackPosition = raycasthit.point;
-          }
-          else
-          {
-            _attackPosition = transform.position + dirToPlayer * 100f;
-          }
-        }
+        if (_targetClosest == null) return;
 
         var laser = _gameObjects[0];
-        var attackSpeed = 0.5f;
+        var attackSpeed = _enemyInfo.AttackSpeed;
         var dirToTarget = _attackPosition - transform.position;
         if (Time.time - _attackTime < attackSpeed)
         {
@@ -466,23 +373,136 @@ public class EnemyScript : GameEntity
             laser.SetActive(false);
 
             //
-            if (isOwned)
-            {
-              var raycasthit = new RaycastHit();
-              if (Physics.SphereCast(new Ray(transform.position, dirToTarget), 0.1f, out raycasthit, 100f, LayerMask.GetMask("Default", "Player")))
-              {
-                var playerGot = PlayerController.GetPlayer(raycasthit.collider);
-                if (playerGot != null)
-                {
-                  playerGot.TakeDamage(new DamageData()
-                  {
-                    Damage = 25f,
 
-                    DamageSource = this
-                  });
-                }
+            var raycasthit = new RaycastHit();
+            if (Physics.SphereCast(new Ray(transform.position, dirToTarget), 0.1f, out raycasthit, 100f, LayerMask.GetMask("Default", "Player")))
+            {
+              var playerGot = PlayerController.GetPlayer(raycasthit.collider);
+              if (playerGot != null && playerGot.isLocalPlayer)
+              {
+                playerGot.TakeDamage(new DamageData()
+                {
+                  Damage = 25f,
+                  DamageSourceNetId = netId,
+                });
+              }
+
+            }
+          }
+        }
+
+        break;
+
+      case EnemyType.CHASE_SIMPLE:
+
+        if (_targetClosest == null) return;
+
+        var aoe = transform.GetChild(0).GetChild(2).gameObject;
+        attackSpeed = _enemyInfo.AttackSpeed;
+        if (Time.time - _attackTime < attackSpeed)
+        {
+
+          if (!aoe.activeSelf)
+          {
+            _materials[0].SetFloat("_IntersectionDepth", 0.5f);
+            aoe.SetActive(true);
+          }
+          else
+            _materials[0].SetFloat("_IntersectionDepth", 0.5f + ((Time.time - _attackTime) / attackSpeed) * 1.2f);
+        }
+
+        // Damage
+        else
+        {
+
+          if (_attackTime != -1f)
+          {
+            _attackTime = -1f;
+            _attackFinishTime = Time.time;
+
+            var colliders = Physics.OverlapBox(aoe.transform.position, aoe.transform.localScale * 0.5f, Quaternion.identity, LayerMask.GetMask("Player"));
+            foreach (var collider in colliders)
+            {
+              var playerGot = PlayerController.GetPlayer(collider);
+              if (playerGot != null && playerGot.isLocalPlayer)
+              {
+                playerGot.TakeDamage(new DamageData()
+                {
+                  Damage = 25f,
+                  DamageSourceNetId = netId,
+                });
               }
             }
+          }
+
+          //
+          var interectionDepth = (1f - (Time.time - _attackFinishTime) / 0.13f) * 2f;
+          if (interectionDepth > 0f)
+          {
+            _materials[0].SetFloat("_IntersectionDepth", interectionDepth);
+          }
+          else
+          {
+            if (aoe.activeSelf)
+              aoe.SetActive(false);
+            var dirToPlayer = (_targetClosest.transform.position - transform.position).normalized;
+            transform.LookAt(transform.position + dirToPlayer);
+          }
+        }
+
+        break;
+
+      case EnemyType.CHASE_LARGE:
+
+        aoe = transform.GetChild(0).GetChild(2).gameObject;
+        attackSpeed = _enemyInfo.AttackSpeed;
+        if (Time.time - _attackTime < attackSpeed)
+        {
+
+          if (!aoe.activeSelf)
+          {
+            _materials[0].SetFloat("_IntersectionDepth", 0.5f);
+            aoe.SetActive(true);
+          }
+          else
+            _materials[0].SetFloat("_IntersectionDepth", 0.5f + ((Time.time - _attackTime) / attackSpeed) * 1.2f);
+        }
+
+        // Damage
+        else
+        {
+          if (_attackTime != -1f)
+          {
+            _attackTime = -1f;
+            _attackFinishTime = Time.time;
+
+            var colliders = Physics.OverlapSphere(aoe.transform.position, aoe.transform.localScale.x * 0.5f, LayerMask.GetMask("Player"));
+            foreach (var collider in colliders)
+            {
+              var playerGot = PlayerController.GetPlayer(collider);
+              if (playerGot != null && playerGot.isLocalPlayer)
+              {
+                playerGot.TakeDamage(new DamageData()
+                {
+                  Damage = 25f,
+                  DamageSourceNetId = netId,
+                });
+              }
+            }
+          }
+
+          //
+          var interectionDepth = (1f - (Time.time - _attackFinishTime) / 0.13f) * 2f;
+          if (interectionDepth > 0f)
+          {
+            _materials[0].SetFloat("_IntersectionDepth", interectionDepth);
+          }
+          else
+          {
+            if (aoe.activeSelf)
+              aoe.SetActive(false);
+            var dirToPlayer = (_targetClosest.transform.position - transform.position).normalized;
+            transform.LookAt(transform.position + dirToPlayer);
           }
         }
 
@@ -499,25 +519,56 @@ public class EnemyScript : GameEntity
 
   //
   [Command(requiresAuthority = false)]
-  void CmdAttack()
+  void CmdAttack(Vector3 attackPos)
   {
-    RpcAttack();
+    RpcAttack(attackPos);
   }
   [ClientRpc]
-  void RpcAttack()
+  void RpcAttack(Vector3 attackPos)
   {
+    if (!_initted) return;
+
+    _attackPosition = attackPos;
     _attackTime = Time.time;
-    _attackTimeNext = Time.time + Random.Range(5f, 9f);
+    _attackTimeNext = Time.time + Random.Range(_enemyInfo.AttackNextMin, _enemyInfo.AttackNextMax);
   }
 
   //
   public static List<EnemyScript> s_Enemies;
   public static Dictionary<int, EnemyScript> s_EnemiesMapped;
 
-  public static void Init()
+  public static new void Init()
   {
     s_Enemies = new();
     s_EnemiesMapped = new();
+
+    s_enemyInfos = new()
+    {
+      {
+        EnemyType.FLY_SIMPLE,
+        new EnemyInfo()
+        {
+          AttackSpeed = 0.5f,
+          AttackNextMin = 5f, AttackNextMax = 9f,
+        }
+      },
+      {
+        EnemyType.CHASE_SIMPLE,
+        new EnemyInfo()
+        {
+          AttackSpeed = 0.5f,
+          AttackNextMin = 5f, AttackNextMax = 9f,
+        }
+      },
+      {
+        EnemyType.CHASE_LARGE,
+        new EnemyInfo()
+        {
+          AttackSpeed = 0.5f,
+          AttackNextMin = 5f, AttackNextMax = 9f,
+        }
+      }
+    };
   }
 
   // Update enemies incrementally for systems
@@ -530,8 +581,8 @@ public class EnemyScript : GameEntity
     while (numEnemiesUpdate-- > 0)
     {
 
-      var enemy = s_Enemies[s_enemyIndex++];
       s_enemyIndex %= s_Enemies.Count;
+      var enemy = s_Enemies[s_enemyIndex++];
 
       // Set enemy closest target
       var players = PlayerController.s_Players;
